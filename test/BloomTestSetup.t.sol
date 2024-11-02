@@ -17,6 +17,8 @@ import {Tby} from "@bloom-v2/token/Tby.sol";
 
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockPriceFeed} from "./mocks/MockPriceFeed.sol";
+import "../src/interfaces/IOrderbook.sol";
+import {console} from "forge-std/console.sol";
 
 abstract contract BloomTestSetup is Test {
     using FpMath for uint256;
@@ -60,6 +62,187 @@ abstract contract BloomTestSetup is Test {
 
         tby = Tby(bloomPool.tby());
         assertNotEq(address(bloomPool), address(0));
+    }
+
+    function testKillFiftyPercentOrder( ) public {
+     
+        uint256[3] memory orders;
+        uint256 killAmount;
+        orders[0] = 50e18;
+        orders[1] = 100e18;
+        orders[2] = 100e18;
+        killAmount = 140e18;
+
+        address borrower2 = makeAddr("borrower2");
+        address borrower3 = makeAddr("borrower3");
+
+        vm.startPrank(owner);
+        bloomPool.whitelistBorrower(borrower, true);
+        bloomPool.whitelistBorrower(borrower2, true);
+        bloomPool.whitelistBorrower(borrower3, true);
+        vm.stopPrank();
+
+        vm.startPrank(owner);
+        bloomPool.whitelistBorrower(borrower2, true);
+        bloomPool.whitelistBorrower(borrower3, true);
+
+        stable.mint(borrower, orders[0].divWadUp(initialLeverage));
+        stable.mint(borrower2, orders[1].divWadUp(initialLeverage));
+        stable.mint(borrower3, orders[2].divWadUp(initialLeverage));
+
+        // Create 3 filled orders with alice w/ 3 different borrowers
+        _createLendOrder(alice, orders[0]);
+        vm.startPrank(borrower);
+        stable.approve(address(bloomPool), orders[0].divWadUp(initialLeverage));
+        bloomPool.fillOrder(alice, orders[0]);
+        _createLendOrder(alice, orders[1]);
+        vm.startPrank(borrower2);
+        stable.approve(address(bloomPool), orders[1].divWadUp(initialLeverage));
+        bloomPool.fillOrder(alice, orders[1]);
+        _createLendOrder(alice, orders[2]);
+        vm.startPrank(borrower3);
+        stable.approve(address(bloomPool), orders[2].divWadUp(initialLeverage));
+        bloomPool.fillOrder(alice, orders[2]);
+
+        vm.startPrank(alice);
+        bloomPool.killMatchOrder(killAmount);
+
+        assertEq(bloomPool.matchedOrder(alice, 1).lCollateral, 50e18);
+    }
+
+    function testIncorrectMatchOrderDeletionDueToEmptyMatchOrders() public{
+        address lender1 = makeAddr("lender1");
+        address borrower1 = makeAddr("borrower1");
+        address borrower2 = makeAddr("borrower2");
+        
+        vm.startPrank(owner);
+        bloomPool.whitelistBorrower(borrower1, true);
+        bloomPool.whitelistBorrower(borrower2, true);
+        stable.mint(borrower1, 100 ether);
+        stable.mint(borrower2, 100 ether);
+        stable.mint(lender1, 100 ether);
+        // fillOrder without a previous lendOrder to create a matchOrder with zero amounts
+        vm.startPrank(borrower1);
+        bloomPool.fillOrder(lender1, 10 ether);
+        IOrderbook.MatchOrder memory emptyMatchOrder = bloomPool.matchedOrder(lender1, 0);
+        assertEq(emptyMatchOrder.lCollateral, 0);
+        assertEq(emptyMatchOrder.bCollateral, 0);
+        assertEq(emptyMatchOrder.borrower, borrower1);
+
+       _createLendOrder(lender1, 40 ether);
+        
+        vm.startPrank(borrower2);
+        stable.approve(address(bloomPool), 40 ether);
+        bloomPool.fillOrder(lender1, 40 ether);
+
+        vm.startPrank(lender1);
+        bloomPool.killMatchOrder(20 ether);
+        vm.stopPrank();
+
+        // assertEq(stable.balanceOf(address(bloomPool)), 1.58e19);
+        console.log('stable.balanceOf(address(bloomPool): ', stable.balanceOf(address(bloomPool)));
+        
+        IOrderbook.MatchOrder memory remainingMatchOrder = bloomPool.matchedOrder(lender1, 0);
+        uint256 matchOrderCount = bloomPool.matchedOrderCount(lender1);
+        // There is only one remaining match order with zero amount that correspond to borrower1.
+        // Match order of borrower2 should have a least 20 ether of lCollateral but it was deleted by error.
+        assertEq(matchOrderCount, 1);
+        assertEq(remainingMatchOrder.lCollateral, 0);
+        assertEq(remainingMatchOrder.bCollateral, 0);
+        assertEq(remainingMatchOrder.borrower, borrower1);
+    }
+
+    function testIncorrectMatchOrderDeletionDueToEmptyMatchOrderProducedInKillBorrowerMatchFunction() public{
+        address lender1 = makeAddr("lender1");
+        address borrower1 = makeAddr("borrower1");
+        address borrower2 = makeAddr("borrower2");
+        
+        vm.startPrank(owner);
+        bloomPool.whitelistBorrower(borrower1, true);
+        bloomPool.whitelistBorrower(borrower2, true);
+        stable.mint(borrower1, 100 ether);
+        stable.mint(borrower2, 100 ether);
+        stable.mint(lender1, 100 ether);
+
+
+       _createLendOrder(lender1, 40 ether);
+        
+        vm.startPrank(borrower1);
+        stable.approve(address(bloomPool), 40 ether);
+        bloomPool.fillOrder(lender1, 40 ether);
+        vm.stopPrank();
+
+        vm.startPrank(borrower1);
+        bloomPool.killBorrowerMatch(lender1);
+        vm.stopPrank();
+
+        // After Borrower kill a match the match remains with zero balances(an empty match order).
+        IOrderbook.MatchOrder memory emptyMatchOrder = bloomPool.matchedOrder(lender1, 0);
+        assertEq(emptyMatchOrder.lCollateral, 0);
+        assertEq(emptyMatchOrder.bCollateral, 0);
+        assertEq(emptyMatchOrder.borrower, borrower1);
+
+    
+        vm.startPrank(borrower2);
+        stable.approve(address(bloomPool), 40 ether);
+        bloomPool.fillOrder(lender1, 40 ether);
+        vm.stopPrank();
+
+        vm.startPrank(lender1);
+        bloomPool.killMatchOrder(20 ether);
+        vm.stopPrank();
+
+        IOrderbook.MatchOrder memory remainingMatchOrder = bloomPool.matchedOrder(lender1, 0);
+        uint256 matchOrderCount = bloomPool.matchedOrderCount(lender1);
+        // There is only one remaining match order with zero amount and that one belongs to borrower1.
+        // Match order of borrower2 should have a least 20 ether of lCollateral but it was deleted by error.
+        assertEq(matchOrderCount, 1);
+        assertEq(remainingMatchOrder.lCollateral, 0);
+        assertEq(remainingMatchOrder.bCollateral, 0);
+        assertEq(remainingMatchOrder.borrower, borrower1);
+    }
+
+    function testSwapInConvertAllAmountInOneMatchOrder() public {
+        address lender1 = makeAddr("lender1");
+        address borrower1 = makeAddr("borrower1");
+        address borrower2 = makeAddr("borrower2");
+        
+        vm.startPrank(owner);
+        bloomPool.whitelistBorrower(borrower1, true);
+        bloomPool.whitelistBorrower(borrower2, true);
+        bloomPool.whitelistMarketMaker(marketMaker, true);
+        stable.mint(borrower1, 100 ether);
+        stable.mint(borrower2, 100 ether);
+        stable.mint(lender1, 100 ether);
+
+       _createLendOrder(lender1, 40 ether);
+        
+        vm.startPrank(borrower1);
+        stable.approve(address(bloomPool), 20 ether);
+        bloomPool.fillOrder(lender1, 20 ether);
+        vm.stopPrank();
+
+        vm.startPrank(borrower2);
+        stable.approve(address(bloomPool), 10 ether);
+        bloomPool.fillOrder(lender1, 10 ether);
+        vm.stopPrank();
+
+        uint256 stableAmount = 30 ether;
+        (, int256 answer,,,) = priceFeed.latestRoundData();
+        uint256 answerScaled = uint256(answer) * (10 ** (18 - priceFeed.decimals()));
+        uint256 rwaAmount = (stableAmount * (10 ** (18 - stable.decimals()))).divWadUp(answerScaled);
+
+        vm.startPrank(marketMaker);
+        billToken.mint(marketMaker, rwaAmount);
+        billToken.approve(address(bloomPool), rwaAmount);
+        address[] memory _lenders = new address[](1);
+        _lenders[0] = lender1;
+        bloomPool.swapIn(_lenders, stableAmount);
+        uint256 borrower1ConvertedAmount = bloomPool.borrowerAmount(borrower1, bloomPool.lastMintedId());
+        console.log('borrower1ConvertedAmount: ', borrower1ConvertedAmount);
+        uint256 borrower2ConvertedAmount = bloomPool.borrowerAmount(borrower2, bloomPool.lastMintedId());
+        console.log('borrower2ConvertedAmount: ', borrower2ConvertedAmount);
+        
     }
 
     function _createLendOrder(address account, uint256 amount) internal {

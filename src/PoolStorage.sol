@@ -199,6 +199,7 @@ abstract contract PoolStorage is IPoolStorage, Ownable2Step {
 
     /// @notice Internal logic to set the spread.
     function _setSpread(uint256 spread_) internal {
+        // @audit q: what are the consequences to be set to the max value?
         require(spread_ >= MIN_SPREAD, Errors.InvalidSpread());
         _spread = spread_;
         emit SpreadSet(spread_);

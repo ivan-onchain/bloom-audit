@@ -3,6 +3,8 @@ src = "src"
 out = "out"
 libs = ["lib"]
 via-ir = true
+# memory_limit = 10000000000000000
+# gas_limit = "299554432"
 
 remappings = [
     "@bloom-v2/=src/",
@@ -10,8 +12,16 @@ remappings = [
     "@chainlink/=lib/chainlink/contracts/src/v0.8/",
 ]
 
+
+
 [fuzz]
 runs = 10000
+
+[invariant]
+runs = 10
+depth = 100
+fail_on_revert = true
+
 
 gas_reports = ["*"]
 gas_reports_ignore = ["MockERC20", "BloomTestSetup"]

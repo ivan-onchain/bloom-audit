@@ -16,6 +16,7 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 import {BloomErrors as Errors} from "@bloom-v2/helpers/BloomErrors.sol";
+import {console} from "forge-std/console.sol";
 
 import {Orderbook} from "@bloom-v2/Orderbook.sol";
 import {IBloomPool} from "@bloom-v2/interfaces/IBloomPool.sol";
@@ -207,6 +208,9 @@ contract BloomPool is IBloomPool, Orderbook, ReentrancyGuard {
         RwaPrice storage rwaPrice = _tbyIdToRwaPrice[id];
         TbyCollateral storage collateral = _idToCollateral[id];
         uint256 currentPrice = _rwaPrice();
+        console.log('collateral.assetAmount: ', collateral.assetAmount);
+        console.log('collateral.currentRwaAmount: ', collateral.currentRwaAmount);
+        console.log('collateral.originalRwaAmount: ', collateral.originalRwaAmount);
 
         // Cannot swap out more RWA tokens than is allocated for the TBY.
         rwaAmount = Math.min(rwaAmount, collateral.currentRwaAmount);
@@ -224,14 +228,34 @@ contract BloomPool is IBloomPool, Orderbook, ReentrancyGuard {
         uint256 percentSwapped = rwaAmount.divWad(collateral.originalRwaAmount);
         uint256 percentOfLiquidity = rwaAmount.divWad(collateral.currentRwaAmount);
         require(percentOfLiquidity >= MIN_SWAP_OUT_PERCENT, Errors.SwapOutTooSmall());
+        console.log('rwaAmount: ', rwaAmount);
+        console.log('collateral.originalRwaAmount: ', collateral.originalRwaAmount);
+        
+        console.log('percentSwapped: ', percentSwapped);
 
         uint256 tbyTotalSupply = _tby.totalSupply(id);
+        console.log('tbyTotalSupply: ', tbyTotalSupply);
+        
+        // uint256 tbyAmount = percentSwapped != Math.WAD ? tbyTotalSupply.rawMul(percentSwapped) : tbyTotalSupply * 1e18;
         uint256 tbyAmount = percentSwapped != Math.WAD ? tbyTotalSupply.mulWadUp(percentSwapped) : tbyTotalSupply;
+  
         require(tbyAmount > 0, Errors.ZeroAmount());
+        console.log('tbyAmount: ', tbyAmount);
+        console.log('rwaAmount: ', rwaAmount);
+        console.log('currentPrice: ', currentPrice);
+        console.log('_rwaDecimals: ', _rwaDecimals);
+        console.log('_assetDecimals: ', _assetDecimals);
 
         // Calculate the amount of assets that will be swapped out.
         assetAmount = uint256(currentPrice).mulWadUp(rwaAmount) / (10 ** ((18 - _rwaDecimals) + (18 - _assetDecimals)));
+        // if (assetAmount==0) {
+        //     assetAmount = 1;
+        // }
+        console.log('assetAmount: ', assetAmount);
+
+        // uint256 lenderReturn = getRate(id).mulWad(tbyAmount).mulWad(1);
         uint256 lenderReturn = getRate(id).mulWad(tbyAmount);
+        console.log('lenderReturn: ', lenderReturn);
 
         // If the price has dropped between the end of the TBY's maturity date and when the market maker swap finishes,
         //     only the borrower's returns will be negatively impacted, unless the rate of the drop in price is so large,
@@ -265,7 +289,8 @@ contract BloomPool is IBloomPool, Orderbook, ReentrancyGuard {
         }
 
         emit MarketMakerSwappedOut(id, msg.sender, rwaAmount, assetAmount);
-
+        console.log('_asset.balanceOf(msg.sender): ', IERC20(_asset).balanceOf(msg.sender));
+        
         IERC20(_asset).safeTransferFrom(msg.sender, address(this), assetAmount);
         IERC20(_rwa).safeTransfer(msg.sender, rwaAmount);
     }
@@ -361,10 +386,18 @@ contract BloomPool is IBloomPool, Orderbook, ReentrancyGuard {
 
         // Validate the latest round data from the price feed.
         require(answer > 0, Errors.InvalidPriceFeed());
+        
+        console.log('priceFeed.updateInterval: ', priceFeed.updateInterval);
+        console.log('updatedAt: ', updatedAt);
+        console.log('answer: ', answer);
+        console.log('priceFeed.decimals: ', priceFeed.decimals);
+        
         require(updatedAt >= block.timestamp - priceFeed.updateInterval, Errors.OutOfDate());
 
         uint256 scaler = 10 ** (18 - priceFeed.decimals);
+        // uint256 scaler = 10 ** 8;
         return uint256(answer) * scaler;
+        // return uint256(answer) / scaler;
     }
 
     /**
@@ -387,13 +420,17 @@ contract BloomPool is IBloomPool, Orderbook, ReentrancyGuard {
             if (remainingAmount != 0) {
                 // If the match order is already closed by the borrower, skip it
                 if (matches[index].lCollateral == 0) {
-                    matches.pop();
+                    //@audit-high same problem here, current match is not necessarily the last match
+                    // matches.pop();
                     continue;
                 }
-
+                
                 (uint256 lenderFunds, uint256 borrowerFunds) =
                     _calculateRemovalAmounts(remainingAmount, matches[index].lCollateral, matches[index].bCollateral);
                 uint256 amountToRemove = lenderFunds + borrowerFunds;
+                
+                //@audit lenderFunds is a % of remainingAmount and borrowerFunds = remainingAmount - lenderFunds, so remainingAmount = borrowerFunds+lenderFunds.
+                // If that is true amountToRemove=remainingAmount and all amount is consumed by only one match?
 
                 remainingAmount -= amountToRemove;
 

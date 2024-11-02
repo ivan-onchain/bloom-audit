@@ -18,6 +18,7 @@ import {BloomErrors as Errors} from "@bloom-v2/helpers/BloomErrors.sol";
 
 import {PoolStorage} from "@bloom-v2/PoolStorage.sol";
 import {IOrderbook} from "@bloom-v2/interfaces/IOrderbook.sol";
+import {console} from "forge-std/console.sol";
 
 /**
  * @title Orderbook
@@ -80,7 +81,8 @@ abstract contract Orderbook is IOrderbook, PoolStorage {
         external
         KycBorrower
         returns (uint256 filledAmount, uint256 borrowAmount)
-    {
+    {   
+        // @audit if accounts array is empty, tx won't revert and borrower will believe he fill an order.
         uint256 len = accounts.length;
         for (uint256 i = 0; i != len; ++i) {
             (uint256 fillSize, uint256 borrowSize) = _fillOrder(accounts[i], amount);
@@ -121,9 +123,20 @@ abstract contract Orderbook is IOrderbook, PoolStorage {
         uint256 len = matches.length;
         for (uint256 i = 0; i != len; ++i) {
             if (matches[i].borrower == msg.sender) {
+
+               
                 lenderAmount = uint256(matches[i].lCollateral);
                 borrowerReturn = uint256(matches[i].bCollateral);
                 // Zero out the collateral amounts of the match order to preserve the array's order
+                // @audit FillOrder has a zero amount restriction, check how this can affect. Research about zero amount vulns
+                 // Shift the elements to the left from the index
+                // for (uint j = i; j < matches.length - 1; j++) {
+                //     matches[j] = matches[j + 1];
+                // }
+
+                // Remove the last element (which is now duplicated)
+                // matches.pop();
+
                 matches[i].lCollateral = 0;
                 matches[i].bCollateral = 0;
                 // Decrement the matched depth and open move the lenders collateral to an open order.
@@ -135,7 +148,7 @@ abstract contract Orderbook is IOrderbook, PoolStorage {
 
         require(lenderAmount != 0, Errors.MatchOrderNotFound());
         emit MatchOrderKilled(lender, msg.sender, lenderAmount);
-
+        // @audit research about re-entrance to see if there is a chance here.
         IERC20(_asset).safeTransfer(msg.sender, borrowerReturn);
     }
 
@@ -171,7 +184,9 @@ abstract contract Orderbook is IOrderbook, PoolStorage {
         _amountZeroCheck(amount);
 
         uint256 orderDepth = _userOpenOrder[account];
-
+        _amountZeroCheck(orderDepth);
+        
+        // @audit filled is going to be zero if orderDepth is zero, so that MatchOrder will have zero values.
         filled = Math.min(orderDepth, amount);
         _openDepth -= filled;
         _matchedDepth += filled;
@@ -190,7 +205,7 @@ abstract contract Orderbook is IOrderbook, PoolStorage {
                 return (filled, borrowAmount);
             }
         }
-
+        // @audit q: why 128 it can't be 256
         matches.push(
             MatchOrder({lCollateral: uint128(filled), bCollateral: uint128(borrowAmount), borrower: msg.sender})
         );
@@ -224,6 +239,7 @@ abstract contract Orderbook is IOrderbook, PoolStorage {
         uint256 idleUsed = Math.min(_idleCapital[account], amount);
         if (idleUsed > 0) {
             _idleCapital[account] -= idleUsed;
+            //@audit if idleUsed == amount, amount will be zero. I heard some tokens can revert due to  zero values, research about this.
             amount -= idleUsed;
             emit IdleCapitalDecreased(account, idleUsed);
         }
@@ -246,6 +262,10 @@ abstract contract Orderbook is IOrderbook, PoolStorage {
 
             // If the match order is already closed, remove it from the array
             if (matches[index].lCollateral == 0) {
+                 // Shift the elements to the left from the index
+                for (uint j = index; j < matches.length - 1; j++) {
+                    matches[j] = matches[j + 1];
+                }
                 matches.pop();
                 continue;
             }
@@ -253,15 +273,14 @@ abstract contract Orderbook is IOrderbook, PoolStorage {
             if (remainingAmount != 0) {
                 uint256 amountToRemove = Math.min(remainingAmount, matches[index].lCollateral);
                 uint256 borrowAmount = uint256(matches[index].bCollateral);
-
                 if (amountToRemove != matches[index].lCollateral) {
                     borrowAmount = amountToRemove.divWad(_leverage);
                     matches[index].lCollateral -= uint128(amountToRemove);
                     matches[index].bCollateral -= uint128(borrowAmount);
                 }
+        
                 remainingAmount -= amountToRemove;
                 _idleCapital[matches[index].borrower] += borrowAmount;
-
                 emit MatchOrderKilled(account, matches[index].borrower, amountToRemove);
                 if (matches[index].lCollateral == amountToRemove) matches.pop();
             } else {
